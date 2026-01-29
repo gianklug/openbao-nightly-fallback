@@ -53,7 +53,7 @@ jobs:
         run: |
           TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
-          echo "NIGHTLY_VERSION=nightly-${TIMESTAMP}" >> $GITHUB_ENV
+          echo "NIGHTLY_VERSION=0.0.0-nightly.${TIMESTAMP}" >> $GITHUB_ENV
           echo "NIGHTLY_RELEASE=true" >> $GITHUB_ENV
 
       - name: Install build dependencies
