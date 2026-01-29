@@ -45,23 +45,15 @@ jobs:
             git checkout ${{ github.event.inputs.openbao_ref }}
           fi
 
-          # Initialize git tags for goreleaser
-          git fetch --tags || true
-
-          # If no tags exist, create a dummy tag for goreleaser
-          if ! git describe --tags 2>/dev/null; then
-            echo "No tags found, creating initial tag"
-            git tag v0.0.0-nightly
-          fi
-
           echo "Building OpenBao from commit: $(git rev-parse HEAD)"
           echo "OPENBAO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "OPENBAO_SHORT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
       - name: Set version and date
         run: |
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
-          echo "NIGHTLY_VERSION=nightly-$(date -u +%Y%m%d)" >> $GITHUB_ENV
+          echo "NIGHTLY_VERSION=nightly-${TIMESTAMP}" >> $GITHUB_ENV
           echo "NIGHTLY_RELEASE=true" >> $GITHUB_ENV
 
       - name: Install build dependencies
@@ -93,9 +85,10 @@ jobs:
           # Run bootstrap to get build tools
           make bootstrap || true
 
-          # Set up git for goreleaser
+          # Set up git for goreleaser and create version tag
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ env.NIGHTLY_VERSION }}" -m "Nightly build ${{ env.NIGHTLY_VERSION }}"
 
       - name: Build UI assets with make
         working-directory: openbao-source
@@ -153,6 +146,25 @@ jobs:
                 - "LICENSE"
                 - "README.md"
                 - "CHANGELOG.md"
+
+          nfpms:
+            - id: packages
+              package_name: openbao
+              file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+              vendor: OpenBao
+              homepage: https://openbao.org
+              maintainer: OpenBao Nightly Build <noreply@github.com>
+              description: OpenBao - Open Source Fork of HashiCorp Vault
+              license: MPL-2.0
+              formats:
+                - deb
+                - rpm
+              bindir: /usr/bin
+              contents:
+                - src: LICENSE
+                  dst: /usr/share/doc/openbao/LICENSE
+                - src: README.md
+                  dst: /usr/share/doc/openbao/README.md
 
           changelog:
             disable: true
