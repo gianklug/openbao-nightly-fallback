@@ -1,0 +1,247 @@
+name: OpenBao Nightly Multi-Platform Build
+
+on:
+  schedule:
+    # Run every day at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      openbao_ref:
+        description: 'OpenBao branch/tag/commit to build (default: main)'
+        required: false
+        default: 'main'
+        type: string
+
+env:
+  OPENBAO_REPO: 'https://github.com/openbao/openbao.git'
+  GO_VERSION: '1.23'
+
+jobs:
+  build-matrix:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+          # macOS builds
+          - os: darwin
+            arch: amd64
+            runner: macos-13
+          - os: darwin
+            arch: arm64
+            runner: macos-14
+          # Windows builds
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Clone OpenBao repository
+        shell: bash
+        run: |
+          git clone ${{ env.OPENBAO_REPO }} openbao-source
+          cd openbao-source
+
+          # Check out the specified ref or default to main
+          if [ -n "${{ github.event.inputs.openbao_ref }}" ]; then
+            git checkout ${{ github.event.inputs.openbao_ref }}
+          fi
+
+          echo "Building OpenBao from commit: $(git rev-parse HEAD)"
+          echo "OPENBAO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "OPENBAO_SHORT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Set version and date
+        shell: bash
+        run: |
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "NIGHTLY_VERSION=nightly-$(date -u +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Build OpenBao binary
+        shell: bash
+        working-directory: openbao-source
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          # Install dependencies
+          go mod download
+
+          # Build the binary
+          CGO_ENABLED=0 go build \
+            -tags ui \
+            -ldflags "-X github.com/openbao/openbao/version.GitCommit=${{ env.OPENBAO_COMMIT }} -X github.com/openbao/openbao/version.BuildDate=${{ env.BUILD_DATE }}" \
+            -o ../release/bao-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.os == 'windows' && '.exe' || '' }} \
+            .
+
+      - name: Generate checksum
+        shell: bash
+        working-directory: release
+        run: |
+          if command -v sha256sum &> /dev/null; then
+            sha256sum bao-${{ matrix.os }}-${{ matrix.arch }}* > bao-${{ matrix.os }}-${{ matrix.arch }}.sha256
+          else
+            shasum -a 256 bao-${{ matrix.os }}-${{ matrix.arch }}* > bao-${{ matrix.os }}-${{ matrix.arch }}.sha256
+          fi
+          cat bao-${{ matrix.os }}-${{ matrix.arch }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bao-${{ matrix.os }}-${{ matrix.arch }}
+          path: release/*
+          retention-days: 1
+
+  create-release:
+    name: Create Nightly Release
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Organize release files
+        run: |
+          mkdir -p release
+          find release-artifacts -type f -exec cp {} release/ \;
+          ls -lah release/
+
+      - name: Set version and date
+        run: |
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "NIGHTLY_VERSION=nightly-$(date -u +%Y%m%d)" >> $GITHUB_ENV
+
+      - name: Get OpenBao commit info
+        run: |
+          git clone --depth=1 ${{ env.OPENBAO_REPO }} temp-clone
+          cd temp-clone
+          echo "OPENBAO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "OPENBAO_SHORT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Create release notes
+        run: |
+          cat > release-notes.md << 'EOF'
+          # OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}
+
+          **Build Date:** ${{ env.BUILD_DATE }}
+          **Source Commit:** ${{ env.OPENBAO_COMMIT }}
+          **Source Repository:** https://github.com/openbao/openbao
+
+          ## About
+
+          This is an automated nightly build of OpenBao from the main branch.
+
+          - **Commit:** [`${{ env.OPENBAO_SHORT_COMMIT }}`](https://github.com/openbao/openbao/commit/${{ env.OPENBAO_COMMIT }})
+          - **Built on:** ${{ env.BUILD_DATE }}
+
+          ## Available Platforms
+
+          - Linux (amd64, arm64)
+          - macOS (amd64, arm64)
+          - Windows (amd64)
+
+          ## Installation
+
+          ### Linux/macOS
+          ```bash
+          # Download the binary for your platform
+          # For Linux amd64:
+          wget https://github.com/${{ github.repository }}/releases/download/nightly/bao-linux-amd64
+
+          # Make executable
+          chmod +x bao-linux-amd64
+          sudo mv bao-linux-amd64 /usr/local/bin/bao
+
+          # Verify installation
+          bao version
+          ```
+
+          ### Windows
+          ```powershell
+          # Download bao-windows-amd64.exe from the assets below
+          # Add to PATH or run directly
+          .\bao-windows-amd64.exe version
+          ```
+
+          ## Warning
+
+          ⚠️ **This is a nightly build and may contain bugs or incomplete features.**
+
+          Use at your own risk. For production use, please use official stable releases.
+          EOF
+
+      - name: Delete old nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+        continue-on-error: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create nightly \
+            --title "OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}" \
+            --notes-file release-notes.md \
+            --prerelease \
+            release/*
+
+      - name: Update latest nightly info
+        run: |
+          mkdir -p nightly-info
+          cat > nightly-info/latest.json << EOF
+          {
+            "version": "${{ env.NIGHTLY_VERSION }}",
+            "build_date": "${{ env.BUILD_DATE }}",
+            "commit": "${{ env.OPENBAO_COMMIT }}",
+            "short_commit": "${{ env.OPENBAO_SHORT_COMMIT }}",
+            "source_repo": "https://github.com/openbao/openbao"
+          }
+          EOF
+
+          cat > nightly-info/README.md << EOF
+          # Latest Nightly Build
+
+          **Version:** ${{ env.NIGHTLY_VERSION }}
+          **Built:** ${{ env.BUILD_DATE }}
+          **Commit:** ${{ env.OPENBAO_SHORT_COMMIT }}
+
+          [Download Latest Nightly Release](https://github.com/${{ github.repository }}/releases/tag/nightly)
+          EOF
+
+      - name: Commit nightly info
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add nightly-info/
+          git diff --staged --quiet || git commit -m "Update nightly build info - ${{ env.NIGHTLY_VERSION }}"
+          git push || true
+        continue-on-error: true

@@ -1,0 +1,313 @@
+name: OpenBao Nightly Release (GoReleaser)
+
+on:
+  schedule:
+    # Run every day at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      openbao_ref:
+        description: 'OpenBao branch/tag/commit to build (default: main)'
+        required: false
+        default: 'main'
+        type: string
+
+env:
+  OPENBAO_REPO: 'https://github.com/openbao/openbao.git'
+  GO_VERSION: '1.23'
+
+jobs:
+  goreleaser-build:
+    name: Build with GoReleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Clone OpenBao repository
+        run: |
+          git clone ${{ env.OPENBAO_REPO }} openbao-source
+          cd openbao-source
+
+          # Check out the specified ref or default to main
+          if [ -n "${{ github.event.inputs.openbao_ref }}" ]; then
+            git checkout ${{ github.event.inputs.openbao_ref }}
+          fi
+
+          # Initialize git tags for goreleaser
+          git fetch --tags || true
+
+          # If no tags exist, create a dummy tag for goreleaser
+          if ! git describe --tags 2>/dev/null; then
+            echo "No tags found, creating initial tag"
+            git tag v0.0.0-nightly
+          fi
+
+          echo "Building OpenBao from commit: $(git rev-parse HEAD)"
+          echo "OPENBAO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "OPENBAO_SHORT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Set version and date
+        run: |
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "NIGHTLY_VERSION=nightly-$(date -u +%Y%m%d)" >> $GITHUB_ENV
+          echo "NIGHTLY_RELEASE=true" >> $GITHUB_ENV
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+
+      - name: Install Node.js for UI build
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build UI assets
+        working-directory: openbao-source
+        run: |
+          cd ui
+          npm install --legacy-peer-deps || yarn install
+          npm run build || yarn run build
+          cd ..
+
+      - name: Prepare for GoReleaser
+        working-directory: openbao-source
+        run: |
+          # Run bootstrap to get build tools
+          make bootstrap || true
+
+          # Set up git for goreleaser
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Copy goreleaser configs to workspace
+        run: |
+          cp openbao-source/goreleaser.*.yaml ./ || true
+          cp openbao-source/.goreleaser-template.yaml ./ || true
+          ls -la *.yaml || echo "No goreleaser configs found"
+
+      - name: Create combined goreleaser config
+        working-directory: openbao-source
+        run: |
+          cat > .goreleaser.yaml << 'EOF'
+          version: 2
+
+          project_name: bao
+
+          before:
+            hooks:
+              - go mod tidy
+              - go generate ./...
+
+          env:
+            - NIGHTLY_RELEASE=-nightly
+
+          builds:
+            - id: builds-all
+              tags:
+                - ui
+              ldflags:
+                - -X github.com/openbao/openbao/version.fullVersion={{.Version}} -X github.com/openbao/openbao/version.GitCommit={{.Commit}} -X github.com/openbao/openbao/version.BuildDate={{ .Date }}
+              env:
+                - CGO_ENABLED=0
+              goos:
+                - linux
+                - darwin
+                - freebsd
+                - netbsd
+                - openbsd
+                - windows
+              goarch:
+                - amd64
+                - arm
+                - arm64
+                - "386"
+              goarm:
+                - "6"
+                - "7"
+              ignore:
+                - goos: darwin
+                  goarch: "386"
+                - goos: darwin
+                  goarm: "6"
+                - goos: darwin
+                  goarch: arm
+                - goos: windows
+                  goarch: arm
+                  goarm: "7"
+              mod_timestamp: "{{ .CommitTimestamp }}"
+
+          report_sizes: true
+
+          checksum:
+            name_template: "checksums.txt"
+            algorithm: sha256
+
+          archives:
+            - format: tar.gz
+              name_template: >-
+                {{ .ProjectName }}_{{ .Version }}_{{- title .Os }}_
+                {{- if eq .Arch "amd64" }}x86_64
+                {{- else if eq .Arch "386" }}i386
+                {{- else }}{{ .Arch }}{{ end }}
+                {{- if .Arm }}v{{ .Arm }}{{ end }}
+              format_overrides:
+                - goos: windows
+                  format: zip
+              files:
+                - "LICENSE"
+                - "README.md"
+                - "CHANGELOG.md"
+
+          changelog:
+            disable: true
+
+          release:
+            github:
+              owner: ${{ github.repository_owner }}
+              name: ${{ github.event.repository.name }}
+            prerelease: true
+            draft: false
+          EOF
+
+      - name: Delete old nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+        continue-on-error: true
+
+      - name: Wait for release deletion
+        run: sleep 10
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean --skip=validate
+          workdir: openbao-source
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIGHTLY_RELEASE: "true"
+
+      - name: Rename release to nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get the latest release tag created by goreleaser
+          LATEST_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+
+          if [ "$LATEST_TAG" != "nightly" ]; then
+            echo "Renaming release from $LATEST_TAG to nightly"
+
+            # Download all assets
+            mkdir -p nightly-assets
+            gh release download "$LATEST_TAG" -D nightly-assets || true
+
+            # Delete the old tag release
+            gh release delete "$LATEST_TAG" --yes --cleanup-tag || true
+
+            sleep 5
+
+            # Create release notes
+            cat > release-notes.md << EOF
+          # OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}
+
+          **Build Date:** ${{ env.BUILD_DATE }}
+          **Source Commit:** ${{ env.OPENBAO_COMMIT }}
+          **Source Repository:** https://github.com/openbao/openbao
+
+          ## About
+
+          This is an automated nightly build of OpenBao built with GoReleaser.
+
+          - **Commit:** [\`${{ env.OPENBAO_SHORT_COMMIT }}\`](https://github.com/openbao/openbao/commit/${{ env.OPENBAO_COMMIT }})
+          - **Built on:** ${{ env.BUILD_DATE }}
+
+          ## Available Platforms
+
+          Full multi-platform builds for:
+          - Linux (amd64, 386, arm, arm64)
+          - macOS (amd64, arm64)
+          - Windows (amd64, 386, arm64)
+          - FreeBSD, NetBSD, OpenBSD
+
+          ## Installation
+
+          Download the appropriate archive for your platform from the assets below, extract it, and add to your PATH.
+
+          ### Quick Install (Linux/macOS)
+          \`\`\`bash
+          # Linux amd64 example
+          wget https://github.com/${{ github.repository }}/releases/download/nightly/bao_${NIGHTLY_VERSION}_Linux_x86_64.tar.gz
+          tar -xzf bao_${NIGHTLY_VERSION}_Linux_x86_64.tar.gz
+          chmod +x bao
+          sudo mv bao /usr/local/bin/
+          bao version
+          \`\`\`
+
+          ## Warning
+
+          ⚠️ **This is a nightly build and may contain bugs or incomplete features.**
+
+          Use at your own risk. For production, use official stable releases.
+          EOF
+
+            # Create new nightly release
+            if [ -d nightly-assets ] && [ "$(ls -A nightly-assets)" ]; then
+              gh release create nightly \
+                --title "OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}" \
+                --notes-file release-notes.md \
+                --prerelease \
+                nightly-assets/*
+            else
+              echo "No assets to upload, creating release without assets"
+              gh release create nightly \
+                --title "OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}" \
+                --notes-file release-notes.md \
+                --prerelease
+            fi
+          fi
+
+      - name: Update latest nightly info
+        run: |
+          mkdir -p nightly-info
+          cat > nightly-info/latest.json << EOF
+          {
+            "version": "${{ env.NIGHTLY_VERSION }}",
+            "build_date": "${{ env.BUILD_DATE }}",
+            "commit": "${{ env.OPENBAO_COMMIT }}",
+            "short_commit": "${{ env.OPENBAO_SHORT_COMMIT }}",
+            "source_repo": "https://github.com/openbao/openbao"
+          }
+          EOF
+
+          cat > nightly-info/README.md << EOF
+          # Latest Nightly Build
+
+          **Version:** ${{ env.NIGHTLY_VERSION }}
+          **Built:** ${{ env.BUILD_DATE }}
+          **Commit:** ${{ env.OPENBAO_SHORT_COMMIT }}
+
+          [Download Latest Nightly Release](https://github.com/${{ github.repository }}/releases/tag/nightly)
+          EOF
+
+      - name: Commit nightly info
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add nightly-info/ || true
+          git diff --staged --quiet || git commit -m "Update nightly build info - ${{ env.NIGHTLY_VERSION }}"
+          git push || true
+        continue-on-error: true

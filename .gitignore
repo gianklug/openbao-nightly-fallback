@@ -1,0 +1,31 @@
+# OpenBao source (fetched during builds, not tracked)
+openbao-source/
+
+# Build artifacts
+release/
+release-artifacts/
+nightly-assets/
+dist/
+*.tar.gz
+*.zip
+*.exe
+bao
+checksums.txt
+release-notes.md
+
+# Temporary files
+temp-clone/
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Keep nightly-info directory but ignore certain files
+!nightly-info/
