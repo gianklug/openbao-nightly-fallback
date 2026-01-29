@@ -71,6 +71,9 @@ jobs:
           # Run bootstrap to get build tools
           make bootstrap || true
 
+          # Build UI assets
+          make static-dist
+
           # Build the binary with UI
           CGO_ENABLED=0 BUILD_TAGS='ui' sh -c "'$(pwd)/scripts/build.sh'"
 
@@ -88,40 +91,25 @@ jobs:
 
       - name: Create release notes
         run: |
-          cat > release-notes.md << EOF
+          cat > release-notes.md << 'EOF'
           # OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}
 
           **Build Date:** ${{ env.BUILD_DATE }}
           **Source Commit:** ${{ env.OPENBAO_COMMIT }}
-          **Source Repository:** https://github.com/openbao/openbao
 
-          ## About
+          Automated nightly build from https://github.com/openbao/openbao
 
-          This is an automated nightly build of OpenBao from the main branch.
-
-          - **Commit:** [\`${{ env.OPENBAO_SHORT_COMMIT }}\`](https://github.com/openbao/openbao/commit/${{ env.OPENBAO_COMMIT }})
-          - **Built on:** ${{ env.BUILD_DATE }}
-
-          ## Download
-
-          Download the binary for your platform from the assets below.
+          Includes Web UI.
 
           ## Installation
 
-          \`\`\`bash
-          # Download and make executable
+          ```bash
           chmod +x bao-linux-amd64
           sudo mv bao-linux-amd64 /usr/local/bin/bao
-
-          # Verify installation
           bao version
-          \`\`\`
+          ```
 
-          ## Warning
-
-          ⚠️ **This is a nightly build and may contain bugs or incomplete features.**
-
-          Use at your own risk. For production use, please use official stable releases.
+          ⚠️ Nightly build - use at your own risk
           EOF
 
       - name: Generate checksums

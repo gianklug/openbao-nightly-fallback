@@ -72,14 +72,6 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Build UI assets
-        working-directory: openbao-source
-        run: |
-          cd ui
-          npm install --legacy-peer-deps || yarn install
-          npm run build || yarn run build
-          cd ..
-
       - name: Prepare for GoReleaser
         working-directory: openbao-source
         run: |
@@ -89,6 +81,12 @@ jobs:
           # Set up git for goreleaser
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Build UI assets with make
+        working-directory: openbao-source
+        run: |
+          # Use OpenBao's Makefile to build UI properly
+          make static-dist
 
       - name: Copy goreleaser configs to workspace
         run: |

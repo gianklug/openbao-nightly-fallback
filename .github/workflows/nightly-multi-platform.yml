@@ -17,8 +17,47 @@ env:
   GO_VERSION: '1.23'
 
 jobs:
+  build-ui:
+    name: Build UI Assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Clone OpenBao repository
+        run: |
+          git clone ${{ env.OPENBAO_REPO }} openbao-source
+          cd openbao-source
+          if [ -n "${{ github.event.inputs.openbao_ref }}" ]; then
+            git checkout ${{ github.event.inputs.openbao_ref }}
+          fi
+
+      - name: Build UI
+        working-directory: openbao-source
+        run: |
+          make bootstrap || true
+          make static-dist
+
+      - name: Upload UI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-assets
+          path: openbao-source/http/web_ui/
+          retention-days: 1
+
   build-matrix:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: build-ui
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -70,13 +109,19 @@ jobs:
           echo "OPENBAO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "OPENBAO_SHORT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
+      - name: Download UI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-assets
+          path: openbao-source/http/web_ui
+
       - name: Set version and date
         shell: bash
         run: |
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
           echo "NIGHTLY_VERSION=nightly-$(date -u +%Y%m%d)" >> $GITHUB_ENV
 
-      - name: Build OpenBao binary
+      - name: Build OpenBao binary with UI
         shell: bash
         working-directory: openbao-source
         env:
@@ -86,7 +131,7 @@ jobs:
           # Install dependencies
           go mod download
 
-          # Build the binary
+          # Build the binary with UI tag
           CGO_ENABLED=0 go build \
             -tags ui \
             -ldflags "-X github.com/openbao/openbao/version.GitCommit=${{ env.OPENBAO_COMMIT }} -X github.com/openbao/openbao/version.BuildDate=${{ env.BUILD_DATE }}" \
@@ -148,53 +193,18 @@ jobs:
       - name: Create release notes
         run: |
           cat > release-notes.md << 'EOF'
-          # OpenBao Nightly Build - ${{ env.NIGHTLY_VERSION }}
+          # OpenBao Nightly Build
 
           **Build Date:** ${{ env.BUILD_DATE }}
           **Source Commit:** ${{ env.OPENBAO_COMMIT }}
-          **Source Repository:** https://github.com/openbao/openbao
 
-          ## About
+          Automated multi-platform build from https://github.com/openbao/openbao
 
-          This is an automated nightly build of OpenBao from the main branch.
+          **Platforms:** Linux, macOS, Windows (amd64, arm64)
 
-          - **Commit:** [`${{ env.OPENBAO_SHORT_COMMIT }}`](https://github.com/openbao/openbao/commit/${{ env.OPENBAO_COMMIT }})
-          - **Built on:** ${{ env.BUILD_DATE }}
+          Includes Web UI.
 
-          ## Available Platforms
-
-          - Linux (amd64, arm64)
-          - macOS (amd64, arm64)
-          - Windows (amd64)
-
-          ## Installation
-
-          ### Linux/macOS
-          ```bash
-          # Download the binary for your platform
-          # For Linux amd64:
-          wget https://github.com/${{ github.repository }}/releases/download/nightly/bao-linux-amd64
-
-          # Make executable
-          chmod +x bao-linux-amd64
-          sudo mv bao-linux-amd64 /usr/local/bin/bao
-
-          # Verify installation
-          bao version
-          ```
-
-          ### Windows
-          ```powershell
-          # Download bao-windows-amd64.exe from the assets below
-          # Add to PATH or run directly
-          .\bao-windows-amd64.exe version
-          ```
-
-          ## Warning
-
-          ⚠️ **This is a nightly build and may contain bugs or incomplete features.**
-
-          Use at your own risk. For production use, please use official stable releases.
+          ⚠️ Nightly builds - use at your own risk
           EOF
 
       - name: Delete old nightly release
