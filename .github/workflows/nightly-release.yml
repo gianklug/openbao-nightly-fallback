@@ -32,14 +32,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: false
 
       - name: Clone OpenBao repository
         run: |
-          git clone ${{ env.OPENBAO_REPO }} openbao-source
+          git clone --depth=1 ${{ env.OPENBAO_REPO }} openbao-source
           cd openbao-source
 
           # Check out the specified ref or default to main
           if [ -n "${{ github.event.inputs.openbao_ref }}" ]; then
+            git fetch --depth=1 origin ${{ github.event.inputs.openbao_ref }}
             git checkout ${{ github.event.inputs.openbao_ref }}
           fi
 
@@ -71,6 +73,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'yarn'
+          cache-dependency-path: openbao-source/ui/yarn.lock
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            openbao-source/vendor
+          key: ${{ runner.os }}-go-${{ hashFiles('openbao-source/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
       - name: Prepare for GoReleaser
         working-directory: openbao-source
@@ -111,7 +126,7 @@ jobs:
             - NIGHTLY_RELEASE=-nightly
 
           builds:
-            - id: builds-all
+            - id: builds-linux-amd64
               tags:
                 - ui
               ldflags:
@@ -120,29 +135,8 @@ jobs:
                 - CGO_ENABLED=0
               goos:
                 - linux
-                - darwin
-                - freebsd
-                - netbsd
-                - openbsd
-                - windows
               goarch:
                 - amd64
-                - arm
-                - arm64
-                - "386"
-              goarm:
-                - "6"
-                - "7"
-              ignore:
-                - goos: darwin
-                  goarch: "386"
-                - goos: darwin
-                  goarm: "6"
-                - goos: darwin
-                  goarch: arm
-                - goos: windows
-                  goarch: arm
-                  goarm: "7"
               mod_timestamp: "{{ .CommitTimestamp }}"
 
           report_sizes: true
@@ -154,14 +148,7 @@ jobs:
           archives:
             - format: tar.gz
               name_template: >-
-                {{ .ProjectName }}_{{ .Version }}_{{- title .Os }}_
-                {{- if eq .Arch "amd64" }}x86_64
-                {{- else if eq .Arch "386" }}i386
-                {{- else }}{{ .Arch }}{{ end }}
-                {{- if .Arm }}v{{ .Arm }}{{ end }}
-              format_overrides:
-                - goos: windows
-                  format: zip
+                {{ .ProjectName }}_{{ .Version }}_{{- title .Os }}_x86_64
               files:
                 - "LICENSE"
                 - "README.md"
