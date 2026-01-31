@@ -1,7 +1,7 @@
 {
-  "version": "0.0.0-nightly.20260130040050",
-  "build_date": "2026-01-30T04:00:50Z",
-  "commit": "3471be0a6080e3933d567133fd34d60268288843",
-  "short_commit": "3471be0",
+  "version": "0.0.0-nightly.20260131035747",
+  "build_date": "2026-01-31T03:57:47Z",
+  "commit": "7d743286e24a16fde283e01cc7d6cc14d8ba354e",
+  "short_commit": "7d74328",
   "source_repo": "https://github.com/openbao/openbao"
 }
